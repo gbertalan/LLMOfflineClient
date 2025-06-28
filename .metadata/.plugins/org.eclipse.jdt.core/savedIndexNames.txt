@@ -1,4 +1,0 @@
-INDEX VERSION 1.131+C:\Users\Garry Bertalan\Desktop\Git_Cloned_Repositories\LLMOfflineClient\.metadata\.plugins\org.eclipse.jdt.core
-1865797976.index
-1440507491.index
-753161807.index
