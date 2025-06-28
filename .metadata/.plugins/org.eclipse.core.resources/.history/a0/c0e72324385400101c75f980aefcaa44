@@ -1,0 +1,158 @@
+import javax.swing.*;
+import java.awt.*;
+import java.awt.event.*;
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Stream;
+
+public class Frame extends JFrame {
+    private JComboBox<String> modelDropdown;
+    private JTextArea chatArea;
+    private JTextArea promptArea;
+    private JButton sendButton;
+    private JButton stopButton;
+    private AtomicBoolean stopGeneration;
+    private Thread currentGenerationThread;
+
+    public Frame() {
+        setTitle("Local LLM Client");
+        setSize(1000, 800);
+        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        setLayout(new BorderLayout());
+        stopGeneration = new AtomicBoolean(false);
+
+        String[] models = {"codellama:7b", "llama2:7b", "mistral:7b", "gemma:7b"};
+        modelDropdown = new JComboBox<>(models);
+        add(modelDropdown, BorderLayout.NORTH);
+
+        JPanel centerContainer = new JPanel();
+        centerContainer.setLayout(new BoxLayout(centerContainer, BoxLayout.Y_AXIS));
+        add(centerContainer, BorderLayout.CENTER);
+
+        JPanel chatPanel = new JPanel(new BorderLayout());
+        chatArea = new JTextArea();
+        chatArea.setEditable(false);
+        JScrollPane chatScroll = new JScrollPane(chatArea);
+        chatPanel.add(chatScroll, BorderLayout.CENTER);
+        centerContainer.add(chatPanel);
+
+        JPanel inputPanel = new JPanel(new BorderLayout());
+        promptArea = new JTextArea();
+        promptArea.setLineWrap(true);
+        JScrollPane promptScroll = new JScrollPane(promptArea);
+        inputPanel.add(promptScroll, BorderLayout.CENTER);
+
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        sendButton = new JButton("Send");
+        stopButton = new JButton("Stop");
+        stopButton.setEnabled(false);
+        buttonPanel.add(stopButton);
+        buttonPanel.add(sendButton);
+        inputPanel.add(buttonPanel, BorderLayout.EAST);
+        centerContainer.add(inputPanel);
+
+        sendButton.addActionListener(e -> sendPrompt());
+        stopButton.addActionListener(e -> {
+            stopGeneration.set(true);
+            if (currentGenerationThread != null) {
+                currentGenerationThread.interrupt();
+            }
+            stopButton.setEnabled(false);
+        });
+
+        promptArea.addKeyListener(new KeyAdapter() {
+            public void keyPressed(KeyEvent e) {
+                if (e.getKeyCode() == KeyEvent.VK_ENTER && !e.isShiftDown()) {
+                    e.consume();
+                    sendPrompt();
+                }
+            }
+        });
+
+        setVisible(true);
+    }
+
+    private void sendPrompt() {
+        if (currentGenerationThread != null && currentGenerationThread.isAlive()) {
+            return;
+        }
+
+        String prompt = promptArea.getText().trim();
+        if (prompt.isEmpty()) return;
+
+        chatArea.append("User: " + prompt + "\nLLM: ");
+        promptArea.setText("");
+        stopGeneration.set(false);
+        stopButton.setEnabled(true);
+        sendButton.setEnabled(false);
+
+        String selectedModel = (String) modelDropdown.getSelectedItem();
+        String ollamaUrl = "http://localhost:11434/api/generate";
+
+        String requestBody = String.format("{\"model\": \"%s\", \"prompt\": \"%s\"}", selectedModel, prompt);
+
+        HttpClient client = HttpClient.newHttpClient();
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(ollamaUrl))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(requestBody))
+                .build();
+
+        currentGenerationThread = new Thread(() -> {
+            try {
+                HttpResponse<Stream<String>> response = client.send(
+                    request, 
+                    HttpResponse.BodyHandlers.ofLines()
+                );
+                
+                response.body().forEach(line -> {
+                    if (stopGeneration.get()) {
+                        throw new RuntimeException("Generation stopped by user");
+                    }
+                    
+                    if (line.contains("\"response\":\"")) {
+                        String[] parts = line.split("\"response\":\"");
+                        if (parts.length > 1) {
+                            String token = parts[1].split("\"")[0];
+                            SwingUtilities.invokeLater(() -> {
+                                chatArea.append(token);
+                                chatArea.setCaretPosition(chatArea.getDocument().getLength());
+                            });
+                        }
+                    }
+                });
+                
+                SwingUtilities.invokeLater(() -> {
+                    chatArea.append("\n\n");
+                    stopButton.setEnabled(false);
+                    sendButton.setEnabled(true);
+                });
+                
+            } catch (Exception ex) {
+                if (!stopGeneration.get()) {
+                    SwingUtilities.invokeLater(() -> {
+                        chatArea.append("\nError: " + ex.getMessage() + "\n\n");
+                        stopButton.setEnabled(false);
+                        sendButton.setEnabled(true);
+                    });
+                } else {
+                    SwingUtilities.invokeLater(() -> {
+                        chatArea.append("\n[Response stopped]\n\n");
+                        stopButton.setEnabled(false);
+                        sendButton.setEnabled(true);
+                    });
+                }
+            }
+        });
+        
+        currentGenerationThread.start();
+    }
+
+    public static void main(String[] args) {
+        new Frame();
+    }
+}

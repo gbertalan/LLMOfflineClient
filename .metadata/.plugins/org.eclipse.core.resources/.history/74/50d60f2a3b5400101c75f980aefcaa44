@@ -1,0 +1,110 @@
+import javax.swing.*;
+import java.awt.*;
+import java.awt.event.*;
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.stream.Stream;
+
+public class Frame extends JFrame {
+    private JComboBox<String> modelDropdown;
+    private MarkdownDisplayPanel chatDisplay;
+    private JTextArea promptArea;
+    private JButton sendButton;
+
+    public Frame() {
+        setTitle("Local LLM Client");
+        setSize(1000, 800);
+        setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+        setLayout(new BorderLayout());
+
+        String[] models = {"codellama:7b", "llama2:7b", "mistral:7b", "gemma:7b"};
+        modelDropdown = new JComboBox<>(models);
+        add(modelDropdown, BorderLayout.NORTH);
+
+        JPanel centerContainer = new JPanel();
+        centerContainer.setLayout(new BoxLayout(centerContainer, BoxLayout.Y_AXIS));
+        add(centerContainer, BorderLayout.CENTER);
+
+        chatDisplay = new MarkdownDisplayPanel();
+        JScrollPane chatScroll = new JScrollPane(chatDisplay);
+        centerContainer.add(chatScroll);
+
+        JPanel inputPanel = new JPanel(new BorderLayout());
+        promptArea = new JTextArea();
+        promptArea.setLineWrap(true);
+        promptArea.setWrapStyleWord(true);
+        JScrollPane promptScroll = new JScrollPane(promptArea);
+        inputPanel.add(promptScroll, BorderLayout.CENTER);
+
+        sendButton = new JButton("Send");
+        inputPanel.add(sendButton, BorderLayout.EAST);
+        centerContainer.add(inputPanel);
+
+        sendButton.addActionListener(e -> sendPrompt());
+
+        promptArea.addKeyListener(new KeyAdapter() {
+            public void keyPressed(KeyEvent e) {
+                if (e.getKeyCode() == KeyEvent.VK_ENTER && !e.isShiftDown()) {
+                    e.consume();
+                    sendPrompt();
+                }
+            }
+        });
+
+        setVisible(true);
+    }
+
+    private void sendPrompt() {
+        String prompt = promptArea.getText().trim();
+        if (prompt.isEmpty()) return;
+
+        chatDisplay.appendMarkdown("**User:** " + prompt + "\n\n**LLM:** ");
+        promptArea.setText("");
+
+        String selectedModel = (String) modelDropdown.getSelectedItem();
+        String ollamaUrl = "http://localhost:11434/api/generate";
+
+        String requestBody = String.format("{\"model\": \"%s\", \"prompt\": \"%s\"}", selectedModel, prompt);
+
+        HttpClient client = HttpClient.newHttpClient();
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(ollamaUrl))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(requestBody))
+                .build();
+
+        new Thread(() -> {
+            try {
+                HttpResponse<Stream<String>> response = client.send(
+                    request, 
+                    HttpResponse.BodyHandlers.ofLines()
+                );
+                
+                response.body().forEach(line -> {
+                    if (line.contains("\"response\":\"")) {
+                        String[] parts = line.split("\"response\":\"");
+                        if (parts.length > 1) {
+                            String responseToken = parts[1].split("\"")[0];
+                            final String token = responseToken.replace("\\n", "\n");
+                            SwingUtilities.invokeLater(() -> {
+                                chatDisplay.appendMarkdown(token);
+                            });
+                        }
+                    }
+                });
+                
+                SwingUtilities.invokeLater(() -> chatDisplay.appendMarkdown("\n\n"));
+                
+            } catch (IOException | InterruptedException ex) {
+                SwingUtilities.invokeLater(() -> chatDisplay.appendMarkdown("\n**Error:** " + ex.getMessage() + "\n\n"));
+            }
+        }).start();
+    }
+
+    public static void main(String[] args) {
+        new Frame();
+    }
+}
